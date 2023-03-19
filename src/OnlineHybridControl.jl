@@ -1,4 +1,4 @@
-module OnlineControl
+module OnlineHybridControl
 
 using SparseArrays
 using StaticArrays

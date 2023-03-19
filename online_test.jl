@@ -4,9 +4,7 @@ using GaussianProcesses
 using Random
 using Distributions
 
-using LearningAbstractions
-
-include("src/OnlineControl.jl")
+include("src/OnlineHybridControl.jl")
 using .OnlineControl       
 
 #===
@@ -99,7 +97,6 @@ ocp = OnlineControl.OnlineSynthesisProblem(
 function bound_sigma(states_dict, controls_dict, invariant_set_dict, gp)
 
     sigma_bounds = Dict()
-    preallocs = Preallocs(Matrix{Float64}(undef, gp.nobs, 1), Matrix{Float64}(undef, 1, 1))
 
     for (state_idx, control_intervals) in invariant_set_dict
         for control_interval in control_intervals
