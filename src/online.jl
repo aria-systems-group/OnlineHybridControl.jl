@@ -50,6 +50,34 @@ function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::In
         osr.other_data["sigma_bounds"][(prev_discrete_state, interval)] = σ2_ub
     end
 
+    ## Test out the barrier recomputation
+    if mod(step, osr.other_data["services"][1]["frequency"]) == 0
+        new_sigma_bound_entries = []
+        for state_idx in keys(osp.state_extents)
+            for (control_idx, control_interval) in osr.other_data["control_intervals"]
+                if state_idx ∉ keys(osp.safe_actions) 
+                    @info "State $state_idx has no safe actions, reoptimizing"
+                    if osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, control_idx)
+                        osp.safe_actions[state_idx] = [control_interval]
+                        push!(new_sigma_bound_entries, [state_idx, control_interval])
+                    end
+                elseif control_interval ∉ osp.safe_actions[state_idx]
+                    @info "State $state_idx with interval $control_interval possibly safe, reoptimizing"
+                    if osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, control_idx)
+                        push!(osp.safe_actions[state_idx], control_interval)
+                        push!(new_sigma_bound_entries, [state_idx, control_interval])
+                    end
+                end
+            end
+        end
+
+        for entry in new_sigma_bound_entries
+            state_ex = osp.state_extents[entry[1]]
+            _, _, σ2_ub = compute_σ_ub_bounds_approx(osr.other_data["gp"], [state_ex[1], entry[2][1]], [state_ex[2], entry[2][2]])
+            osr.other_data["sigma_bounds"][(entry[1], entry[2])] = σ2_ub
+        end
+    end
+
     return nothing
 end
 
