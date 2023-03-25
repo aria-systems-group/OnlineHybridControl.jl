@@ -19,5 +19,6 @@ function save(filename::String, osr::OnlineSynthesisResults)
                 "actions" => osr.actions,
                 "metrics" => osr.metrics,
                 "termination_step" => osr.termination_step,
-                "termination_value" => osr.termination_value))
+                "termination_value" => osr.termination_value,
+                "other_data" => osr.other_data))
 end
