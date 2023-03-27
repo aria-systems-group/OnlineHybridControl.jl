@@ -12,9 +12,9 @@ end
 """
 Execute one step of the online synthesis instance.
 """
-function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::Int)
+function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::Int; verbose=false)
     # 0. Get the Next Best Action and Metric
-    control, metric = online_strategy(osp, osr, step)
+    control, metric, best_interval = online_strategy(osp, osr, step)
     osr.actions[step] = control
     osr.metrics[step] = metric
 
@@ -41,42 +41,72 @@ function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::In
     push!(osr.other_data["y_data"], new_y)
     GaussianProcesses.fit!(osr.other_data["gp"], osr.other_data["x_data"], osr.other_data["y_data"])
 
-    # Every so often update the up in the current state
-    prev_discrete_state = osr.discrete_states[step][1]
-    state_ex = osp.state_extents[prev_discrete_state]
-
-    for (_, interval) in osr.other_data["control_intervals"]
-        _, _, σ2_ub = compute_σ_ub_bounds_approx(osr.other_data["gp"], [state_ex[1], interval[1]], [state_ex[2], interval[2]])
-        osr.other_data["sigma_bounds"][(prev_discrete_state, interval)] = σ2_ub
+    if mod(step, 10) == 0            # Update GP every $N steps
+        mZero = MeanZero()                   # Zero mean function
+        kern = Poly(0.9, 0.0, 2)             # Squared exponential kernel (note that hyperparameters are on the log scale)
+        logObsNoise = log10(0.1^2)
+        osr.other_data["gp"] = GP(osr.other_data["x_data"], osr.other_data["y_data"], mZero, kern, logObsNoise)       #Fit the GP, TODO: hyperparameter optimization?  
+        optimize!(osr.other_data["gp"], kernbounds=[[-4.0, -0.00001], [4.0, 0.00001]], noise=false)
     end
 
-    ## Test out the barrier recomputation
+    # Update all state σ2 bounds (approximately)
+    for i=1:length(osp.state_extents)
+        for (control_idx, interval) in osr.other_data["control_intervals"]
+            state_ex = osp.state_extents[i]
+            _, _, σ2_ub = compute_σ2_ub_bounds_approx(osr.other_data["gp"], [state_ex[1], interval[1]], [state_ex[2], interval[2]])
+            osr.other_data["sigma_bounds"][(i, interval)] = σ2_ub
+            osr.other_data["sigma_bounds_mat"][i, control_idx] = σ2_ub 
+        end
+    end
+
+    ## Recompute the barrier for non-safe states with the same control input
     if mod(step, osr.other_data["services"][1]["frequency"]) == 0
-        new_sigma_bound_entries = []
+        # Get the control idx from the interval
+        idx = -1
+        for (cidx, interval) in osr.other_data["control_intervals"]
+            if best_interval == interval
+                idx = cidx 
+                break
+            end
+        end
         for state_idx in keys(osp.state_extents)
-            for (control_idx, control_interval) in osr.other_data["control_intervals"]
+            ps = osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, idx, osr.other_data["invariant_sets"], osr.other_data["sigma_bounds_mat"])
+            osr.other_data["P_safe"][state_idx, idx] = max(ps, osr.other_data["P_safe"][state_idx, idx])    # Only keep new barrier if it is better
+
+            if ps > 0.99
                 if state_idx ∉ keys(osp.safe_actions) 
-                    @info "State $state_idx has no safe actions, reoptimizing"
-                    if osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, control_idx)
-                        osp.safe_actions[state_idx] = [control_interval]
-                        push!(new_sigma_bound_entries, [state_idx, control_interval])
-                    end
-                elseif control_interval ∉ osp.safe_actions[state_idx]
-                    @info "State $state_idx with interval $control_interval possibly safe, reoptimizing"
-                    if osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, control_idx)
-                        push!(osp.safe_actions[state_idx], control_interval)
-                        push!(new_sigma_bound_entries, [state_idx, control_interval])
-                    end
+                    verbose && @info "Found a new safe state $state_idx with interval $best_interval."
+                    push!(osr.other_data["invariant_sets"], state_idx)
+                    osp.safe_actions[state_idx] = [best_interval]
+                else
+                    verbose && @info "Found a new interval $best_interval for safe state $state_idx."
+                    push!(osp.safe_actions[state_idx], best_interval)
                 end
             end
         end
 
-        for entry in new_sigma_bound_entries
-            state_ex = osp.state_extents[entry[1]]
-            _, _, σ2_ub = compute_σ_ub_bounds_approx(osr.other_data["gp"], [state_ex[1], entry[2][1]], [state_ex[2], entry[2][2]])
-            osr.other_data["sigma_bounds"][(entry[1], entry[2])] = σ2_ub
-        end
+        # Then, loop over all the controls for a certain state
+        state_idx = osr.discrete_states[step+1] 
+        for (idx, control_interval) = osr.other_data["control_intervals"]
+            if state_idx ∈ keys(osp.safe_actions) && (control_interval ∈ osp.safe_actions[state_idx] || control_interval == best_interval)
+                continue
+            end
+            ps = osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, idx, osr.other_data["invariant_sets"], osr.other_data["sigma_bounds_mat"])
+            osr.other_data["P_safe"][state_idx, idx] = max(ps, osr.other_data["P_safe"][state_idx, idx])    # Only keep new barrier if it is better
+
+            if ps > 0.99
+                if state_idx ∉ keys(osp.safe_actions) 
+                    verbose && @info "Found a new safe state $state_idx with interval $control_interval."
+                    push!(osr.other_data["invariant_sets"], state_idx)
+                    osp.safe_actions[state_idx] = [control_interval]
+                else
+                    verbose && @info "Found a new interval $control_interval for safe state $state_idx."
+                    push!(osp.safe_actions[state_idx], control_interval)
+                end
+            end
+        end 
     end
+
 
     return nothing
 end
@@ -84,7 +114,7 @@ end
 """
 Execute a full online synthesis realization.
 """
-function run(osp::OnlineSynthesisProblem, osic::OnlineSynthesisInitialConditions) # What is the most appropriate function name?
+function run(osp::OnlineSynthesisProblem, osic::OnlineSynthesisInitialConditions; verbose=false) # What is the most appropriate function name?
     # In this case, run means "realize one possible instance of the osp (which is stochastic)"
 
     # 0. Set Initial conditions
@@ -93,7 +123,7 @@ function run(osp::OnlineSynthesisProblem, osic::OnlineSynthesisInitialConditions
     # 1. Run the online control problem until termination is reached
     for i=1:osp.max_steps
         # 1a. Run a step of the osp
-        termination_value = step(osp, osr, i)
+        termination_value = step(osp, osr, i, verbose=verbose)
         # 2. Break
         if !isnothing(termination_value)
             osr.termination_step = i+1
