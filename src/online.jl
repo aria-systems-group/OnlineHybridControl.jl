@@ -73,7 +73,7 @@ function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::In
             ps = osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, idx, osr.other_data["invariant_sets"], osr.other_data["sigma_bounds_mat"])
             osr.other_data["P_safe"][state_idx, idx] = max(ps, osr.other_data["P_safe"][state_idx, idx])    # Only keep new barrier if it is better
 
-            if ps > 0.99
+            if ps > osr.other_data["safety_threshold"] 
                 if state_idx ∉ keys(osp.safe_actions) 
                     verbose && @info "Found a new safe state $state_idx with interval $best_interval."
                     push!(osr.other_data["invariant_sets"], state_idx)
@@ -86,7 +86,7 @@ function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::In
         end
 
         # Then, loop over all the controls for a certain state
-        state_idx = osr.discrete_states[step+1] 
+        state_idx = osr.discrete_states[step] 
         for (idx, control_interval) = osr.other_data["control_intervals"]
             if state_idx ∈ keys(osp.safe_actions) && (control_interval ∈ osp.safe_actions[state_idx] || control_interval == best_interval)
                 continue
@@ -94,7 +94,7 @@ function step(osp::OnlineSynthesisProblem, osr::OnlineSynthesisResults, step::In
             ps = osr.other_data["services"][1]["function"](osr.other_data["gp"], state_idx, idx, osr.other_data["invariant_sets"], osr.other_data["sigma_bounds_mat"])
             osr.other_data["P_safe"][state_idx, idx] = max(ps, osr.other_data["P_safe"][state_idx, idx])    # Only keep new barrier if it is better
 
-            if ps > 0.99
+            if ps > osr.other_data["safety_threshold"] 
                 if state_idx ∉ keys(osp.safe_actions) 
                     verbose && @info "Found a new safe state $state_idx with interval $control_interval."
                     push!(osr.other_data["invariant_sets"], state_idx)
